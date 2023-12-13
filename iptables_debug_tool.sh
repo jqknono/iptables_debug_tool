@@ -16,10 +16,12 @@ function yellow() {
 }
 
 function usage() {
-    yellow "Usage: $0 {--black  { --collect <last_seconds> | --parse <ignore_list> | --apply <rule_list> | --show | --clear } [ --full ] }"
+    yellow "Usage: $0 {--black  { --apply-default  <master_node_ip> | --collect <last_seconds> | --parse <ignore_list> | --apply <rule_list> | --show | --clear } [ --full ] }"
     yellow "Usage: $0 {--white  { --by-content | --by-length } { --set | --show | --clear } }"
     echo ""
     yellow "  --black: black list mode"
+    yellow "  --apply-default: apply default rules"
+    green "  e.g.: $0 --black --apply-default <master_node_ip>"
     yellow "  --collect: log ignore connections and last for <last_seconds> seconds"
     yellow "  Could cause system stuck, use with caution. 3 seconds is recommended."
     green "  e.g.: $0 --black --collect 3 > ignore_list"
@@ -38,7 +40,7 @@ function usage() {
     green "  $0 --black --apply rule_list"
     yellow "  RUN AT LAST, AFTER ALL OTHERS FINISHED."
     green "  This will log packet passing through the 4 chains and 5 tables, and may cause system stuck."
-    green "  $0 --black --apply rule_list --full"
+    green "  $0 --black --apply --full"
     echo ""
     yellow "  --show: show log"
     green "  e.g.: $0 --black --show"
@@ -66,6 +68,9 @@ function get_iptables_cmd() {
     out_param=$(echo "$log_line" | grep -oP '(?<=OUT=)[^ ]*')
     src_param=$(echo "$log_line" | grep -oP '(?<=SRC=)[^ ]*')
     dst_param=$(echo "$log_line" | grep -oP '(?<=DST=)[^ ]*')
+    spt_param=$(echo "$log_line" | grep -oP '(?<=SPT=)[^ ]*')
+    dpt_param=$(echo "$log_line" | grep -oP '(?<=DPT=)[^ ]*')
+    proto_param=$(echo "$log_line" | grep -oP '(?<=PROTO=)[^ ]*')
 
     # Extracting table name
     table_name=$(echo "$log_line" | awk '{split($0,a,"[][]"); print a[4]}')
@@ -74,7 +79,7 @@ function get_iptables_cmd() {
     chain_name=$(echo "$log_line" | awk '{split($0,a,"[][]"); print a[6]}')
 
     # Create iptables rule to block the specific traffic
-    # iptables -t "$table" -A "$chain" -o "$out_param" -s "$src_param" -d "$dst_param" -j DROP
+    # iptables -t "$table" -A "$chain" -o "$out_param" -s "$src_param" -d "$dst_param" -p tcp --sport "$spt_param" --dport "$dpt_param" -j DROP
     # fill the param if not null
     null_cnt=0
     command="iptables -t $table_name -A TRACE_PKT_$chain_name"
@@ -102,10 +107,55 @@ function get_iptables_cmd() {
         null_cnt=$((null_cnt + 1))
     fi
 
-    command="$command -j RETURN"
+    proto_flag=0
+    dpt_flag=0
+    spt_flag=0
+    if [ -n "$proto_param" ]; then
+        if [ $proto_param == "TCP" ]; then
+            proto_flag=1
+        elif [ $proto_param == "UDP" ]; then
+            proto_flag=2
+        fi
+    else
+        null_cnt=$((null_cnt + 1))
+    fi
 
-    if [ ! $null_cnt -eq 5 ]; then
-        echo "$command"
+    if [ -n "$spt_param" ]; then
+        # add if spt_param is in range 0-9999, or 30000-32767(k8s service port range)
+        if [ $spt_param -ge 0 -a $spt_param -le 9999 ] || [ $spt_param -ge 30000 -a $spt_param -le 32767 ]; then
+            spt_flag=1
+        fi
+    fi
+
+    if [ -n "$dpt_param" ]; then
+        # add if dpt_param is in range 0-9999, or 30000-32767(k8s service port range)
+        if [ $dpt_param -ge 0 -a $dpt_param -le 9999 ] || [ $dpt_param -ge 30000 -a $dpt_param -le 32767 ]; then
+            dpt_flag=1
+        fi
+    fi
+
+    # if proto_flag not 0
+    if [ ! $proto_flag -eq 0 ]; then
+        if [ $spt_flag -eq 1 -o $dpt_flag -eq 1 ]; then
+            if [ $proto_flag -eq 1 ]; then
+                command="$command \t -p tcp"
+            elif [ $proto_flag -eq 2 ]; then
+                command="$command \t -p udp"
+            fi
+
+            if [ $spt_flag -eq 1 ]; then
+                command="$command --sport $spt_param"
+            fi
+            if [ $dpt_flag -eq 1 ]; then
+                command="$command --dport $dpt_param"
+            fi
+        fi
+    fi
+
+    command="$command \t -j RETURN"
+
+    if [ ! $null_cnt -eq 6 ]; then
+        echo -e "$command"
     fi
 }
 
@@ -116,7 +166,7 @@ function black_generate_iptables_cmd() {
 
     # if file not exist, output usage
     if [ ! -f "$file" ]; then
-        echo "file not exist"
+        red "[ERROR]File $file not exist"
         usage
     fi
 
@@ -134,7 +184,7 @@ function black_generate_iptables_cmd() {
     done <"$file"
 
     # output to stdout
-    sort temp_iptables_cmd.txt | uniq
+    sort temp_iptables_cmd.txt -u
 
     # remove temp file
     rm temp_iptables_cmd.txt
@@ -222,6 +272,7 @@ function black_del_log_rules() {
 # create log rules for seconds to avoid system stuck
 function black_create_log_rules_for_seconds() {
     if [ $# -lt 1 ]; then
+        red "[ERROR]last seconds not specified"
         usage
     fi
 
@@ -240,7 +291,169 @@ function black_create_log_rules_for_seconds() {
 
     end=$(date "+%Y-%m-%d %H:%M:%S")
     start=$(date -d "$current_time - $last_seconds seconds" "+%Y-%m-%d %H:%M:%S")
-    journalctl --since "$start" --until "$end" | grep TRACE | sort | uniq
+    # grep TRACE, remove ID=[0-9]+, remove WINDOW=[0-9]+, remove LEN=[0-9]+, remove ACK PSH SYN FIN,
+    # then sort -u
+    journalctl --since "$start" --until "$end" | grep TRACE | sed -r 's/ID=[0-9]+//g' | sed -r 's/WINDOW=[0-9]+ //g' | sed -r 's/LEN=[0-9]+ //g' | sed -r 's/ACK //g' | sed -r 's/PSH //g' | sed -r 's/SYN //g' | sed -r 's/FIN //g' | sort -u
+}
+
+function black_apply_default_rule() {
+    if [ $# -lt 1 ]; then
+        red "[ERROR]master node ip not specified"
+        usage
+    fi
+
+    black_create_log_chain
+
+    # master node
+    master_node_ip=$1
+    iptables -t mangle -A TRACE_PKT_PREROUTING -s $master_node_ip -j RETURN
+    iptables -t mangle -A TRACE_PKT_INPUT -s $master_node_ip -j RETURN
+    iptables -t mangle -A TRACE_PKT_FORWARD -s $master_node_ip -j RETURN
+    iptables -t mangle -A TRACE_PKT_OUTPUT -s $master_node_ip -j RETURN
+    iptables -t mangle -A TRACE_PKT_POSTROUTING -s $master_node_ip -j RETURN
+    iptables -t nat -A TRACE_PKT_PREROUTING -s $master_node_ip -j RETURN
+    iptables -t nat -A TRACE_PKT_INPUT -s $master_node_ip -j RETURN
+    iptables -t nat -A TRACE_PKT_OUTPUT -s $master_node_ip -j RETURN
+    iptables -t nat -A TRACE_PKT_POSTROUTING -s $master_node_ip -j RETURN
+    iptables -t filter -A TRACE_PKT_INPUT -s $master_node_ip -j RETURN
+    iptables -t filter -A TRACE_PKT_FORWARD -s $master_node_ip -j RETURN
+    iptables -t filter -A TRACE_PKT_OUTPUT -s $master_node_ip -j RETURN
+    # master node
+    iptables -t mangle -A TRACE_PKT_PREROUTING -d $master_node_ip -j RETURN
+    iptables -t mangle -A TRACE_PKT_INPUT -d $master_node_ip -j RETURN
+    iptables -t mangle -A TRACE_PKT_FORWARD -d $master_node_ip -j RETURN
+    iptables -t mangle -A TRACE_PKT_OUTPUT -d $master_node_ip -j RETURN
+    iptables -t mangle -A TRACE_PKT_POSTROUTING -d $master_node_ip -j RETURN
+    iptables -t nat -A TRACE_PKT_PREROUTING -d $master_node_ip -j RETURN
+    iptables -t nat -A TRACE_PKT_INPUT -d $master_node_ip -j RETURN
+    iptables -t nat -A TRACE_PKT_OUTPUT -d $master_node_ip -j RETURN
+    iptables -t nat -A TRACE_PKT_POSTROUTING -d $master_node_ip -j RETURN
+    iptables -t filter -A TRACE_PKT_INPUT -d $master_node_ip -j RETURN
+    iptables -t filter -A TRACE_PKT_FORWARD -d $master_node_ip -j RETURN
+    iptables -t filter -A TRACE_PKT_OUTPUT -d $master_node_ip -j RETURN
+
+    # broadcast
+    broadcast_ip=${master_node_ip%.*}.255
+    iptables -t mangle -A TRACE_PKT_PREROUTING -s $broadcast_ip -j RETURN
+    iptables -t mangle -A TRACE_PKT_INPUT -s $broadcast_ip -j RETURN
+    iptables -t mangle -A TRACE_PKT_FORWARD -s $broadcast_ip -j RETURN
+    iptables -t mangle -A TRACE_PKT_OUTPUT -s $broadcast_ip -j RETURN
+    iptables -t mangle -A TRACE_PKT_POSTROUTING -s $broadcast_ip -j RETURN
+    iptables -t nat -A TRACE_PKT_PREROUTING -s $broadcast_ip -j RETURN
+    iptables -t nat -A TRACE_PKT_INPUT -s $broadcast_ip -j RETURN
+    iptables -t nat -A TRACE_PKT_OUTPUT -s $broadcast_ip -j RETURN
+    iptables -t nat -A TRACE_PKT_POSTROUTING -s $broadcast_ip -j RETURN
+    iptables -t filter -A TRACE_PKT_INPUT -s $broadcast_ip -j RETURN
+    iptables -t filter -A TRACE_PKT_FORWARD -s $broadcast_ip -j RETURN
+    iptables -t filter -A TRACE_PKT_OUTPUT -s $broadcast_ip -j RETURN
+    # broadcast
+    iptables -t mangle -A TRACE_PKT_PREROUTING -d $broadcast_ip -j RETURN
+    iptables -t mangle -A TRACE_PKT_INPUT -d $broadcast_ip -j RETURN
+    iptables -t mangle -A TRACE_PKT_FORWARD -d $broadcast_ip -j RETURN
+    iptables -t mangle -A TRACE_PKT_OUTPUT -d $broadcast_ip -j RETURN
+    iptables -t mangle -A TRACE_PKT_POSTROUTING -d $broadcast_ip -j RETURN
+    iptables -t nat -A TRACE_PKT_PREROUTING -d $broadcast_ip -j RETURN
+    iptables -t nat -A TRACE_PKT_INPUT -d $broadcast_ip -j RETURN
+    iptables -t nat -A TRACE_PKT_OUTPUT -d $broadcast_ip -j RETURN
+    iptables -t nat -A TRACE_PKT_POSTROUTING -d $broadcast_ip -j RETURN
+    iptables -t filter -A TRACE_PKT_INPUT -d $broadcast_ip -j RETURN
+    iptables -t filter -A TRACE_PKT_FORWARD -d $broadcast_ip -j RETURN
+    iptables -t filter -A TRACE_PKT_OUTPUT -d $master_node_ip -j RETURN
+
+    # tcp ports
+    iptables -t mangle -A TRACE_PKT_PREROUTING -p tcp -m multiport --dports 22,137,138,179,443,5443,5473,6443 -j RETURN
+    iptables -t mangle -A TRACE_PKT_INPUT -p tcp -m multiport --dports 22,137,138,179,443,5443,5473,6443 -j RETURN
+    iptables -t mangle -A TRACE_PKT_FORWARD -p tcp -m multiport --dports 22,137,138,179,443,5443,5473,6443 -j RETURN
+    iptables -t mangle -A TRACE_PKT_OUTPUT -p tcp -m multiport --dports 22,137,138,179,443,5443,5473,6443 -j RETURN
+    iptables -t mangle -A TRACE_PKT_POSTROUTING -p tcp -m multiport --dports 22,137,138,179,443,5443,5473,6443 -j RETURN
+    iptables -t nat -A TRACE_PKT_PREROUTING -p tcp -m multiport --dports 22,137,138,179,443,5443,5473,6443 -j RETURN
+    iptables -t nat -A TRACE_PKT_INPUT -p tcp -m multiport --dports 22,137,138,179,443,5443,5473,6443 -j RETURN
+    iptables -t nat -A TRACE_PKT_OUTPUT -p tcp -m multiport --dports 22,137,138,179,443,5443,5473,6443 -j RETURN
+    iptables -t nat -A TRACE_PKT_POSTROUTING -p tcp -m multiport --dports 22,137,138,179,443,5443,5473,6443 -j RETURN
+    iptables -t filter -A TRACE_PKT_INPUT -p tcp -m multiport --dports 22,137,138,179,443,5443,5473,6443 -j RETURN
+    iptables -t filter -A TRACE_PKT_FORWARD -p tcp -m multiport --dports 22,137,138,179,443,5443,5473,6443 -j RETURN
+    iptables -t filter -A TRACE_PKT_OUTPUT -p tcp -m multiport --dports 22,137,138,179,443,5443,5473,6443 -j RETURN
+    # tcp ports
+    iptables -t mangle -A TRACE_PKT_PREROUTING -p tcp -m multiport --sports 22,137,138,179,443,5443,5473,6443 -j RETURN
+    iptables -t mangle -A TRACE_PKT_INPUT -p tcp -m multiport --sports 22,137,138,179,443,5443,5473,6443 -j RETURN
+    iptables -t mangle -A TRACE_PKT_FORWARD -p tcp -m multiport --sports 22,137,138,179,443,5443,5473,6443 -j RETURN
+    iptables -t mangle -A TRACE_PKT_OUTPUT -p tcp -m multiport --sports 22,137,138,179,443,5443,5473,6443 -j RETURN
+    iptables -t mangle -A TRACE_PKT_POSTROUTING -p tcp -m multiport --sports 22,137,138,179,443,5443,5473,6443 -j RETURN
+    iptables -t nat -A TRACE_PKT_PREROUTING -p tcp -m multiport --sports 22,137,138,179,443,5443,5473,6443 -j RETURN
+    iptables -t nat -A TRACE_PKT_INPUT -p tcp -m multiport --sports 22,137,138,179,443,5443,5473,6443 -j RETURN
+    iptables -t nat -A TRACE_PKT_OUTPUT -p tcp -m multiport --sports 22,137,138,179,443,5443,5473,6443 -j RETURN
+    iptables -t nat -A TRACE_PKT_POSTROUTING -p tcp -m multiport --sports 22,137,138,179,443,5443,5473,6443 -j RETURN
+    iptables -t filter -A TRACE_PKT_INPUT -p tcp -m multiport --sports 22,137,138,179,443,5443,5473,6443 -j RETURN
+    iptables -t filter -A TRACE_PKT_FORWARD -p tcp -m multiport --sports 22,137,138,179,443,5443,5473,6443 -j RETURN
+    iptables -t filter -A TRACE_PKT_OUTPUT -p tcp -m multiport --sports 22,137,138,179,443,5443,5473,6443 -j RETURN
+
+    # udp ports
+    iptables -t mangle -A TRACE_PKT_PREROUTING -p udp -m multiport --dports 53,123,137,138,1900 -j RETURN
+    iptables -t mangle -A TRACE_PKT_INPUT -p udp -m multiport --dports 53,123,137,138,1900 -j RETURN
+    iptables -t mangle -A TRACE_PKT_FORWARD -p udp -m multiport --dports 53,123,137,138,1900 -j RETURN
+    iptables -t mangle -A TRACE_PKT_OUTPUT -p udp -m multiport --dports 53,123,137,138,1900 -j RETURN
+    iptables -t mangle -A TRACE_PKT_POSTROUTING -p udp -m multiport --dports 53,123,137,138,1900 -j RETURN
+    iptables -t nat -A TRACE_PKT_PREROUTING -p udp -m multiport --dports 53,123,137,138,1900 -j RETURN
+    iptables -t nat -A TRACE_PKT_INPUT -p udp -m multiport --dports 53,123,137,138,1900 -j RETURN
+    iptables -t nat -A TRACE_PKT_OUTPUT -p udp -m multiport --dports 53,123,137,138,1900 -j RETURN
+    iptables -t nat -A TRACE_PKT_POSTROUTING -p udp -m multiport --dports 53,123,137,138,1900 -j RETURN
+    iptables -t filter -A TRACE_PKT_INPUT -p udp -m multiport --dports 53,123,137,138,1900 -j RETURN
+    iptables -t filter -A TRACE_PKT_FORWARD -p udp -m multiport --dports 53,123,137,138,1900 -j RETURN
+    iptables -t filter -A TRACE_PKT_OUTPUT -p udp -m multiport --dports 53,123,137,138,1900 -j RETURN
+    # udp ports
+    iptables -t mangle -A TRACE_PKT_PREROUTING -p udp -m multiport --sports 53,123,137,138,1900 -j RETURN
+    iptables -t mangle -A TRACE_PKT_INPUT -p udp -m multiport --sports 53,123,137,138,1900 -j RETURN
+    iptables -t mangle -A TRACE_PKT_FORWARD -p udp -m multiport --sports 53,123,137,138,1900 -j RETURN
+    iptables -t mangle -A TRACE_PKT_OUTPUT -p udp -m multiport --sports 53,123,137,138,1900 -j RETURN
+    iptables -t mangle -A TRACE_PKT_POSTROUTING -p udp -m multiport --sports 53,123,137,138,1900 -j RETURN
+    iptables -t nat -A TRACE_PKT_PREROUTING -p udp -m multiport --sports 53,123,137,138,1900 -j RETURN
+    iptables -t nat -A TRACE_PKT_INPUT -p udp -m multiport --sports 53,123,137,138,1900 -j RETURN
+    iptables -t nat -A TRACE_PKT_OUTPUT -p udp -m multiport --sports 53,123,137,138,1900 -j RETURN
+    iptables -t nat -A TRACE_PKT_POSTROUTING -p udp -m multiport --sports 53,123,137,138,1900 -j RETURN
+    iptables -t filter -A TRACE_PKT_INPUT -p udp -m multiport --sports 53,123,137,138,1900 -j RETURN
+    iptables -t filter -A TRACE_PKT_FORWARD -p udp -m multiport --sports 53,123,137,138,1900 -j RETURN
+    iptables -t filter -A TRACE_PKT_OUTPUT -p udp -m multiport --sports 53,123,137,138,1900 -j RETURN
+
+    # localhost: 127.0.0.1
+    iptables -t mangle -A TRACE_PKT_PREROUTING -s 127.0.0.1 -d 127.0.0.1 -j RETURN
+    iptables -t mangle -A TRACE_PKT_INPUT -s 127.0.0.1 -d 127.0.0.1 -j RETURN
+    iptables -t mangle -A TRACE_PKT_FORWARD -s 127.0.0.1 -d 127.0.0.1 -j RETURN
+    iptables -t mangle -A TRACE_PKT_OUTPUT -s 127.0.0.1 -d 127.0.0.1 -j RETURN
+    iptables -t mangle -A TRACE_PKT_POSTROUTING -s 127.0.0.1 -d 127.0.0.1 -j RETURN
+    iptables -t nat -A TRACE_PKT_PREROUTING -s 127.0.0.1 -d 127.0.0.1 -j RETURN
+    iptables -t nat -A TRACE_PKT_INPUT -s 127.0.0.1 -d 127.0.0.1 -j RETURN
+    iptables -t nat -A TRACE_PKT_OUTPUT -s 127.0.0.1 -d 127.0.0.1 -j RETURN
+    iptables -t nat -A TRACE_PKT_POSTROUTING -s 127.0.0.1 -d 127.0.0.1 -j RETURN
+    iptables -t filter -A TRACE_PKT_INPUT -s 127.0.0.1 -d 127.0.0.1 -j RETURN
+    iptables -t filter -A TRACE_PKT_FORWARD -s 127.0.0.1 -d 127.0.0.1 -j RETURN
+    iptables -t filter -A TRACE_PKT_OUTPUT -s 127.0.0.1 -d 127.0.0.1 -j RETURN
+
+    # loopback: 224.0.0.1/4
+    iptables -t mangle -A TRACE_PKT_PREROUTING -s 224.0.0.1/4 -j RETURN
+    iptables -t mangle -A TRACE_PKT_INPUT -s 224.0.0.1/4 -j RETURN
+    iptables -t mangle -A TRACE_PKT_FORWARD -s 224.0.0.1/4 -j RETURN
+    iptables -t mangle -A TRACE_PKT_OUTPUT -s 224.0.0.1/4 -j RETURN
+    iptables -t mangle -A TRACE_PKT_POSTROUTING -s 224.0.0.1/4 -j RETURN
+    iptables -t nat -A TRACE_PKT_PREROUTING -s 224.0.0.1/4 -j RETURN
+    iptables -t nat -A TRACE_PKT_INPUT -s 224.0.0.1/4 -j RETURN
+    iptables -t nat -A TRACE_PKT_OUTPUT -s 224.0.0.1/4 -j RETURN
+    iptables -t nat -A TRACE_PKT_POSTROUTING -s 224.0.0.1/4 -j RETURN
+    iptables -t filter -A TRACE_PKT_INPUT -s 224.0.0.1/4 -j RETURN
+    iptables -t filter -A TRACE_PKT_FORWARD -s 224.0.0.1/4 -j RETURN
+    iptables -t filter -A TRACE_PKT_OUTPUT -s 224.0.0.1/4 -j RETURN
+    # loopback: 224.0.0.1/4
+    iptables -t mangle -A TRACE_PKT_PREROUTING -d 224.0.0.1/4 -j RETURN
+    iptables -t mangle -A TRACE_PKT_INPUT -d 224.0.0.1/4 -j RETURN
+    iptables -t mangle -A TRACE_PKT_FORWARD -d 224.0.0.1/4 -j RETURN
+    iptables -t mangle -A TRACE_PKT_OUTPUT -d 224.0.0.1/4 -j RETURN
+    iptables -t mangle -A TRACE_PKT_POSTROUTING -d 224.0.0.1/4 -j RETURN
+    iptables -t nat -A TRACE_PKT_PREROUTING -d 224.0.0.1/4 -j RETURN
+    iptables -t nat -A TRACE_PKT_INPUT -d 224.0.0.1/4 -j RETURN
+    iptables -t nat -A TRACE_PKT_OUTPUT -d 224.0.0.1/4 -j RETURN
+    iptables -t nat -A TRACE_PKT_POSTROUTING -d 224.0.0.1/4 -j RETURN
+    iptables -t filter -A TRACE_PKT_INPUT -d 224.0.0.1/4 -j RETURN
+    iptables -t filter -A TRACE_PKT_FORWARD -d 224.0.0.1/4 -j RETURN
+    iptables -t filter -A TRACE_PKT_OUTPUT -d 224.0.0.1/4 -j RETURN
 }
 
 function black_clear_log_rules() {
@@ -354,13 +567,21 @@ function white_content_clear_rule() {
 
 function black_apply_iptables_cmd() {
     if [ $# -lt 1 ]; then
+        red "[ERROR]No file specified."
         usage
     fi
 
     file=$1
+    if [ $1 == "--full" ]; then
+        IS_LIGHT_TRAFFIC=1
+        black_del_log_rules
+        black_create_log_rules
+        exit 0
+    fi
+
     # if file not exist, output usage
     if [ ! -f "$file" ]; then
-        echo "file not exist"
+        red "[ERROR]File $file not exist."
         usage
     fi
 
@@ -397,6 +618,7 @@ function white_content_usage() {
 function main() {
     # if no file specified, output usage
     if [ $# -lt 1 ]; then
+        red "[ERROR]No mode specified."
         usage
     fi
 
@@ -426,6 +648,10 @@ function main() {
                 fi
             fi
             black_apply_iptables_cmd $1
+            ;;
+        --apply-default)
+            shift
+            black_apply_default_rule $1
             ;;
         --show)
             black_show

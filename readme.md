@@ -5,6 +5,8 @@
 - 白名单模式: 仅抓取符合特征的报文, 需要自行构造报文, 通常只需要构造 SYN 报文即可, 但每次测试前注意使用 connTRACE -F 清理已建立连接.
 - 黑名单模式: 先采集一段时间的无操作日志, 将日志中的流量加入到日志的忽略名单里, 这样在操作时可以保证日志的纯净性.
 
+**能抓取最完整报文路径的方式是黑名单模式, 但设置较繁琐.**, 按需自行修改脚本`black_apply_default_rule`函数.
+
 本脚本帮助实现这两种方式的抓包.
 
 ## 白名单模式
@@ -34,7 +36,8 @@ iptables_debug_tool.sh --white --by-length --clear
 
 ```bash
 # 发送报文
-hping3 -c 1 --syn --destport 32028 --baseport 23130 --data 5 10.106.121.108 -j
+hping3 -c 1 --syn --destport 32028 --data 5 10.106.121.108 -j
+hping3 -c 1 -2    --destport 32028 --data 5 10.106.121.108 -j
 ```
 
 ### 基于 data 内容
@@ -60,15 +63,18 @@ echo hello > data.txt
 # 使用hping3固定源端口进行访问, 23130(0x5a5a), --syn表示SYN报文, --data表示data长度, --file表示data文件
 # 建立连接后, 可以持续发送数据, 但部分日志不会再触发
 hping3 -c 1 --syn --destport 32028 --baseport 23130 --data 5 --file data.txt 10.106.121.108 -j
+hping3 -c 1 -2    --destport 32028 --baseport 23130 --data 5 --file data.txt 10.106.121.108 -j
 
 # k8s集群根据源端口进行负载均衡, 固定源端口会导致总是访问到同一个pod
 # 测试集群时, 请使用随机源端口进行访问
 hping3 -c 1 --syn --destport 32028 --data 5 --file data.txt 10.106.121.108 -j
+hping3 -c 1 -2    --destport 32028 --data 5 --file data.txt 10.106.121.108 -j
 
 # nc用于测试已创建连接后的规则
 # 使用nc进行访问, 可能存在nat表遗漏, 注意按顺序操作, 1. 启动nc, 2. 清理connTRACE, 3. 启动日志
 # 直接使用echo hello | nc 10.106.121.108 32028 -p 23130, 会遗漏nat表的日志
-# 也存在k8s集群负载均衡失效的可能, 注意更换源端口
+# 也存在k8s集群负载均衡失效的可
+## 能, 注意更换源端口
 nc 10.106.121.108 32028 -p 23130
 ```
 
@@ -76,30 +82,55 @@ nc 10.106.121.108 32028 -p 23130
 
 黑名单模式需要先采集一段时间的不关注连接的日志, 然后将日志中的流量加入到日志的忽略名单里, 这样在操作时可以保证日志的纯净性.
 
-### 创建采集规则
-
 **注意避免在业务过于繁忙的时间段采集, 会导致日志过大, 且可能会影响业务**
 
+### 采集模式
+
 ```bash
-./iptables_debug_tool.sh --black -1
+# 采集忽略名单
+./iptables_debug_tool.sh --black --collect 3 > ignore_list
+# 创建忽略规则
+./iptables_debug_tool.sh --black --parse ignore_list > rule_list
+# 应用忽略规则
+./iptables_debug_tool.sh --black --apply rule_list
+# 重复以上步骤, 直到日志中不再有无关流量
+... ...
+# 采集所有链表的日志
+./iptables_debug_tool.sh --black --apply --full
+# 监控
+./iptables_debug_tool.sh --black --show
+# 清空
+./iptables_debug_tool.sh --black --clear
 ```
 
-### 采集忽略名单
+### 默认规则模式(适用 k8s 集群)
 
 ```bash
-./iptables_debug_tool.sh --black -2 5 > ignore_list.txt
+# 设置calico规则为append模式
+cat <<EOF | kubectl apply -f -
+apiVersion: projectcalico.org/v3
+kind: FelixConfiguration
+metadata:
+  name: default
+spec:
+  bpfLogLevel: ""
+  floatingIPs: Disabled
+  healthPort: 9099
+  logSeverityScreen: Info
+  reportingInterval: 0s
+  chainInsertMode: Append
+EOF
 ```
 
-### 创建忽略规则
-
 ```bash
-./iptables_debug_tool.sh --black -3 ignore_list.txt > ignore_rule.txt
-```
-
-### 应用忽略规则
-
-```bash
-./iptables_debug_tool.sh --black -4 ignore_rule.txt
+# 应用默认忽略规则
+./iptables_debug_tool.sh --black --apply-default 10.106.121.47
+# 采集所有链表的日志
+./iptables_debug_tool.sh --black --apply --full
+# 监控
+./iptables_debug_tool.sh --black --show
+# 清空
+./iptables_debug_tool.sh --black --clear
 ```
 
 ## 使用镜像
