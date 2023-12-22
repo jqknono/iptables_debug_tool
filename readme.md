@@ -1,112 +1,112 @@
 # IPTABLES DEBUG
 
-抓包日志是一种调试防火墙规则的方式, 但抓包时存在许多无用的包, 有两种方式可以仅取抓指定的包, 一个是白名单模式, 一个是黑名单模式.
+Packet capture logs are a way to debug firewall rules, but when capturing packets, there are many useless ones. There are two ways to only capture specific packets: whitelist mode and blacklist mode.
 
-- 白名单模式: 仅抓取符合特征的报文, 需要自行构造报文, 通常只需要构造 SYN 报文即可, 但每次测试前注意使用 connTRACE -F 清理已建立连接.
-- 黑名单模式: 先采集一段时间的无操作日志, 将日志中的流量加入到日志的忽略名单里, 这样在操作时可以保证日志的纯净性.
+- Whitelist mode: Only captures packets that meet certain criteria. You need to construct the packets yourself, usually only needing to create SYN packets. However, before each test, be sure to use `connTRACE -F` to clear established connections.
+- Blacklist mode: First collect a period of inactivity logs and add the traffic from these logs to the ignore list. This ensures the purity of the logs during operations.
 
-**能抓取最完整报文路径的方式是黑名单模式, 但设置较繁琐.**, 按需自行修改脚本`black_apply_default_rule`函数.
+**The method that captures the most complete packet path is the blacklist mode, but it's more complex to set up.** Modify the `black_apply_default_rule` function as needed.
 
-本脚本帮助实现这两种方式的抓包.
+This script helps implement both packet capture modes.
 
-## 白名单模式
+## Whitelist Mode
 
-依赖工具:
+Dependencies:
 
 - hping3:
-  - centos: `yum -y install epel-release & yum -y install hping3`
-  - ubuntu: `apt-get -y install hping3`
+  - CentOS: `yum -y install epel-release & yum -y install hping3 conntrack`
+  - Ubuntu 20.04: `apt-get -y install hping3 conntrack`
+  - Ubuntu 22.04: `apt-get -y install hping3 conntrack iptables`
 
-### 基于 data 长度
+### Based on Data Length
 
-注意报文在传输过程中长度可能会发生变化, 导致报文路径不完整, 比如在 ipip 模式下, 报文长度会增加 20 字节.
+Note that the packet length may change during transmission, causing the packet path to be incomplete. For instance, in ipip mode, the packet length increases by 20 bytes.
 
-监控端:
+Monitoring side:
 
 ```bash
-# 设置采集规则
+# Set capture rules
 iptables_debug_tool.sh --white --by-length --set
-# 监控日志
+# Monitor logs
 iptables_debug_tool.sh --white --by-length --show
-# 清理采集规则
+# Clear capture rules
 iptables_debug_tool.sh --white --by-length --clear
 ```
 
-发送端:
+Sender side:
 
 ```bash
-# 发送报文
+# Send packets
 hping3 -c 1 --syn --destport 32028 --data 5 10.106.121.108 -j
 hping3 -c 1 -2    --destport 32028 --data 5 10.106.121.108 -j
 ```
 
-### 基于 data 内容
+### Based on Data Content
 
-监控端:
+Monitoring side:
 
 ```bash
-# 设置采集规则
+# Set capture rules
 iptables_debug_tool.sh --white --by-content --set
-# 监控日志
+# Monitor logs
 iptables_debug_tool.sh --white --by-content --show
-# 清理采集规则
+# Clear capture rules
 iptables_debug_tool.sh --white --by-content --clear
 ```
 
-发送端:
+Sender side:
 
 ```bash
-# 生成data文件
+# Generate data file
 echo hello > data.txt
 
-# hping3用于测试未创建连接时的规则
-# 使用hping3固定源端口进行访问, 23130(0x5a5a), --syn表示SYN报文, --data表示data长度, --file表示data文件
-# 建立连接后, 可以持续发送数据, 但部分日志不会再触发
+# hping3 used for testing rules without establishing a connection
+# Using hping3 with a fixed source port for access, 23130(0x5a5a), --syn for SYN packets, --data for data length, --file for data file
+# After establishing a connection, continuous data can be sent, but some logs may not be triggered again
 hping3 -c 1 --syn --destport 32028 --baseport 23130 --data 5 --file data.txt 10.106.121.108 -j
 hping3 -c 1 -2    --destport 32028 --baseport 23130 --data 5 --file data.txt 10.106.121.108 -j
 
-# k8s集群根据源端口进行负载均衡, 固定源端口会导致总是访问到同一个pod
-# 测试集群时, 请使用随机源端口进行访问
+# In a k8s cluster, load balancing is based on source ports. Using a fixed source port will always access the same pod
+# When testing the cluster, use a random source port for access
 hping3 -c 1 --syn --destport 32028 --data 5 --file data.txt 10.106.121.108 -j
 hping3 -c 1 -2    --destport 32028 --data 5 --file data.txt 10.106.121.108 -j
 
-# nc用于测试已创建连接后的规则
-# 使用nc进行访问, 可能存在nat表遗漏, 注意按顺序操作, 1. 启动nc, 2. 清理connTRACE, 3. 启动日志
-# 直接使用echo hello | nc 10.106.121.108 32028 -p 23130, 会遗漏nat表的日志
-# 也存在k8s集群负载均衡失效的可
-## 能, 注意更换源端口
+# nc used for testing rules after establishing a connection
+# Use nc for access, there might be a nat table omission, follow the sequence: 1. Start nc, 2. Clear connTRACE, 3. Start logging
+# Using echo hello | nc 10.106.121.108 32028 -p 23130 might omit the nat table logs
+# Also, there might be issues with k8s cluster load balancing, change source ports as needed
 nc 10.106.121.108 32028 -p 23130
 ```
 
-## 黑名单模式
+## Blacklist Mode
 
-黑名单模式需要先采集一段时间的不关注连接的日志, 然后将日志中的流量加入到日志的忽略名单里, 这样在操作时可以保证日志的纯净性.
+Blacklist mode requires collecting logs of inactive connections for a period and then adding the traffic from these logs to the ignore list. This ensures the purity of logs during operations.
 
-**注意避免在业务过于繁忙的时间段采集, 会导致日志过大, 且可能会影响业务**
+**Avoid collecting during busy business hours as it might lead to large logs and potentially impact business.**
 
-### 采集模式
+### Collection Mode
 
 ```bash
-# 采集忽略名单
+# Collect ignore list
 ./iptables_debug_tool.sh --black --collect 3 > ignore_list
-# 创建忽略规则
+# Create ignore rules
 ./iptables_debug_tool.sh --black --parse ignore_list > rule_list
-# 应用忽略规则
+# Apply ignore rules
 ./iptables_debug_tool.sh --black --apply rule_list
-# 重复以上步骤, 直到日志中不再有无关流量
+# Repeat the above steps until there's no more irrelevant traffic in the logs
 ... ...
-# 采集所有链表的日志
+# Collect logs from all chains
 ./iptables_debug_tool.sh --black --apply --full
-# 监控
+# Monitor
 ./iptables_debug_tool.sh --black --show
-# 清空
+# Clear
 ./iptables_debug_tool.sh --black --clear
 ```
 
-### 默认规则模式(适用 k8s 集群)
+### Default Rule Mode (for k8s clusters)
 
 ```bash
-# 设置calico规则为append模式
+# Set calico rules to append mode
 cat <<EOF | kubectl apply -f -
 apiVersion: projectcalico.org/v3
 kind: FelixConfiguration
@@ -123,17 +123,17 @@ EOF
 ```
 
 ```bash
-# 应用默认忽略规则
+# Apply default ignore rules
 ./iptables_debug_tool.sh --black --apply-default 10.106.121.47
-# 采集所有链表的日志
+# Collect logs from all chains
 ./iptables_debug_tool.sh --black --apply --full
-# 监控
+# Monitor
 ./iptables_debug_tool.sh --black --show
-# 清空
+# Clear
 ./iptables_debug_tool.sh --black --clear
 ```
 
-## 使用镜像
+## Using Images
 
 - https://hub.docker.com/r/venilnoronha/tcp-echo-server
   - `docker pull venilnoronha/tcp-echo-server:latest`
