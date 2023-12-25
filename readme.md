@@ -2,7 +2,7 @@
 
 Packet capture logs are a way to debug firewall rules, but when capturing packets, there are many useless ones. There are two ways to only capture specific packets: whitelist mode and blacklist mode.
 
-- Whitelist mode: Only captures packets that meet certain criteria. You need to construct the packets yourself, usually only needing to create SYN packets. However, before each test, be sure to use `connTRACE -F` to clear established connections.
+- Whitelist mode: Only captures packets that meet certain criteria. You need to construct the packets yourself, usually only needing to create SYN packets. However, before each test, be sure to use `conntrack -F` to clear established connections.
 - Blacklist mode: First collect a period of inactivity logs and add the traffic from these logs to the ignore list. This ensures the purity of the logs during operations.
 
 **The method that captures the most complete packet path is the blacklist mode, but it's more complex to set up.** Modify the `black_apply_default_rule` function as needed.
