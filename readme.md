@@ -1,5 +1,7 @@
 # IPTABLES DEBUG
 
+[Github Repo](https://github.com/jqknono/iptables_debug_tool)
+
 Packet capture logs are a way to debug firewall rules, but when capturing packets, there are many useless ones. There are two ways to only capture specific packets: whitelist mode and blacklist mode.
 
 - Whitelist mode: Only captures packets that meet certain criteria. You need to construct the packets yourself, usually only needing to create SYN packets. However, before each test, be sure to use `conntrack -F` to clear established connections.
