@@ -2,14 +2,14 @@
 
 [Github Repo](https://github.com/jqknono/iptables_debug_tool)
 
-Packet capture logs are a way to debug firewall rules, but when capturing packets, there are many useless ones. There are two ways to only capture specific packets: whitelist mode and blacklist mode.
+Packet capture logs are a method for debugging firewall rules. However, capturing packets often results in many irrelevant entries. There are two ways to only capture specific packets: whitelist mode and blacklist mode.
 
-- Whitelist mode: Only captures packets that meet certain criteria. You need to construct the packets yourself, usually only needing to create SYN packets. However, before each test, be sure to use `conntrack -F` to clear established connections.
-- Blacklist mode: First collect a period of inactivity logs and add the traffic from these logs to the ignore list. This ensures the purity of the logs during operations.
+- Whitelist mode: This mode only captures packets that meet certain criteria. You need to construct the packets yourself, typically only needing to create SYN packets. However, ensure to use conntrack -F to clear established connections before each test.
+- Blacklist mode: This mode involves first collecting a period of inactivity logs and adding the traffic from these logs to the ignore list. This ensures the integrity of the logs during operations.
 
 **The method that captures the most complete packet path is the blacklist mode, but it's more complex to set up.** Modify the `black_apply_default_rule` function as needed.
 
-This script helps implement both packet capture modes.
+This script aids in implementing both packet capture modes.
 
 ## Whitelist Mode
 
@@ -22,7 +22,7 @@ Dependencies:
 
 ### Based on Data Length
 
-Note that the packet length may change during transmission, causing the packet path to be incomplete. For instance, in ipip mode, the packet length increases by 20 bytes.
+Note that the packet length may change during transmission, causing the packet path to be incomplete. For example, in ipip mode, the packet length increases by 20 bytes.
 
 Monitoring side:
 
@@ -35,7 +35,7 @@ iptables_debug_tool.sh --white --by-length --show
 iptables_debug_tool.sh --white --by-length --clear
 ```
 
-Sender side:
+On the sender side:
 
 ```bash
 # Send packets
@@ -43,9 +43,9 @@ hping3 -c 1 --syn --destport 32028 --data 5 10.106.121.108 -j
 hping3 -c 1 -2    --destport 32028 --data 5 10.106.121.108 -j
 ```
 
-### Based on Data Content
+### Based on data content
 
-Monitoring side:
+On the monitoring side:
 
 ```bash
 # Set capture rules
