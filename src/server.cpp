@@ -21,9 +21,9 @@ Simple server echo the client's message
 #define PORT_UDP "55581"  // UDP port to listen on
 #define BACKLOG 10        // Maximum number of pending connections
 
-volatile sig_atomic_t flag = 0;
+volatile sig_atomic_t server_flag = 0;
 
-void handle_sigint(int sig) { flag = 1; }
+void handle_sigint(int sig) { server_flag = 1; }
 
 // Get sockaddr, IPv4 or IPv6
 void *get_in_addr(struct sockaddr *sa) {
@@ -122,6 +122,13 @@ void *tcp_server(void *arg) {
                     send(new_fd, "connection quit\n", 16, 0);
                     break;
                 }
+                if (strcmp(buf, "shutdown\n") == 0) {
+                    printf(
+                        "client shutdown the server by sending "
+                        "\"shutdown\"\n");
+                    send(new_fd, "server shutdown\n", 16, 0);
+                    server_flag = 1;
+                }
                 buf[len] = '\0';
                 printf("received: %s\n", buf);
             }
@@ -200,6 +207,11 @@ void *udp_server(void *arg) {
                          sizeof s));
         buf_udp[numbytes] = '\0';
         printf("received: %s\n", buf_udp);
+        if (strcmp(buf_udp, "shutdown\n") == 0) {
+            printf("client shutdown the server by sending \"shutdown\"\n");
+            server_flag = 1;
+        }
+
         // send back the message to the client
         if ((numbytes = sendto(sockfd_udp, buf_udp, numbytes, 0,
                                (struct sockaddr *)&their_addr_udp, addr_len)) ==
@@ -231,7 +243,7 @@ int main(void) {
     while (1) {
         // sleep for 1 second
         sleep(1);
-        if (flag) {
+        if (server_flag) {
             printf("\nServer stopped by Ctrl+C\n");
             exit(0);
         }
