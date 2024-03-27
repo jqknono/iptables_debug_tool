@@ -1,7 +1,10 @@
 #!/bin/bash
 
-IS_LIGHT_TRAFFIC=0
-export IS_LIGHT_TRAFFIC
+export IS_LIGHT_TRAFFI=0
+export TOOL_PREFIX="TRACE"
+export SHOW_EXISTING_RULES=0
+
+current_ip=$(hostname -I | awk '{print $1}')
 
 function red() {
     echo -e "\n\033[31m$1\033[0m\n"
@@ -16,47 +19,57 @@ function yellow() {
 }
 
 function usage() {
-    yellow "Usage: $0 {--black  { --apply-default  <master_node_ip> | --collect <last_seconds> | --parse <ignore_list> | --apply <rule_list> | --show | --clear } [ --full ] }"
-    yellow "Usage: $0 {--white  { --by-content | --by-length } { --set | --show | --clear } }"
+    yellow "Usage: $0 {--black  { --apply-default  <k8s_master_node_ip> | --collect <last_seconds> | --parse <ignore_list> | --apply <rule_list> | --show | --clear } [ --full ] }"
+    yellow "Usage: $0 {--white  { --by-content | --by-length } { --set <arg> | --show | --clear } }"
     echo ""
-    yellow "  --black: black list mode"
+    yellow "--black: blacklist mode"
     yellow "  --apply-default: apply default rules"
-    green "  e.g.: $0 --black --apply-default <master_node_ip>"
+    green "  e.g.: $0 --black --apply-default <k8s_master_node_ip>"
+    echo ""
     yellow "  --collect: log ignore connections and last for <last_seconds> seconds"
     yellow "  Could cause system stuck, use with caution. 3 seconds is recommended."
     green "  e.g.: $0 --black --collect 3 > ignore_list"
+    echo ""
     yellow "  --parse: generate iptables command"
     green "  e.g.: $0 --black --parse ignore_list > rule_list"
+    echo ""
     yellow "  --apply: apply iptables command"
     green "  e.g.: $0 --black --apply rule_list"
+    echo ""
     yellow "  The 3 steps above may need to run several times to ignore all connections."
     green "  $0 --black --collect 3 > ignore_list"
     green "  $0 --black --parse ignore_list > rule_list"
     green "  $0 --black --apply rule_list"
-    red "  [Attention]: --full may cause system stuck. And it could log the full packet path."
+    red "  [Attention] --full may cause system stuck. And it could log the full packet path."
     yellow "  Full and DANGEROUS mode:"
     green "  $0 --black --collect 1 --full > ignore_list"
     green "  $0 --black --parse ignore_list > rule_list"
     green "  $0 --black --apply rule_list"
+    echo ""
     yellow "  RUN AT LAST, AFTER ALL OTHERS FINISHED."
-    green "  This will log packet passing through the 4 chains and 5 tables, and may cause system stuck."
+    red "  This will log packet passing through the 4 chains and 5 tables, and may cause system stuck."
     green "  $0 --black --apply --full"
     echo ""
     yellow "  --show: show log"
     green "  e.g.: $0 --black --show"
+    echo ""
     yellow "  --clear: clear log rules"
     green "  e.g.: $0 --black --clear"
     echo ""
-    yellow "  --white: whitelist mode"
+    yellow "--white: whitelist mode"
     yellow "  --by-content: whitelist mode by packet content"
     yellow "  --by-length: whitelist mode by packet length"
-    yellow "  By length is simple, but may lost log in some scenarios, like tunnel, which packet length is not fixed."
+    red "  By length is simple, but may lost log in some scenarios, like tunnel, which packet length is not fixed."
     yellow "  --set: set whitelist rules"
-    green "  e.g.: $0 --white --by-content --set"
+    green "  e.g.: $0 --white --by-content --set <length>"
+    green "  e.g.: $0 --white --by-length --set <content>"
+    echo ""
     yellow "  --show: show whitelist rules"
-    green "  e.g.: $0 --white --by-content --show"
+    green "  e.g.: $0 --white --show"
+    echo ""
     yellow "  --clear: clear whitelist rules"
-    green "  e.g.: $0 --white --by-content --clear"
+    green "  e.g.: $0 --white --clear"
+    echo ""
 
     exit 1
 }
@@ -235,38 +248,38 @@ function black_create_log_chain() {
 
 # Attention: this function could cause system stuck
 function black_create_log_rules() {
-    iptables -t mangle -A TRACE_PKT_PREROUTING -j LOG --log-prefix "[TRACE][mangle][PREROUTING ]:"
-    iptables -t mangle -A TRACE_PKT_INPUT -j LOG --log-prefix "[TRACE][mangle][INPUT      ]:"
-    iptables -t mangle -A TRACE_PKT_FORWARD -j LOG --log-prefix "[TRACE][mangle][FORWARD    ]:"
-    iptables -t mangle -A TRACE_PKT_OUTPUT -j LOG --log-prefix "[TRACE][mangle][OUTPUT     ]:"
-    iptables -t mangle -A TRACE_PKT_POSTROUTING -j LOG --log-prefix "[TRACE][mangle][POSTROUTING]:"
+    iptables -t mangle -A TRACE_PKT_PREROUTING -j LOG --log-prefix "[$TOOL_PREFIX][mangle][PREROUTING ]:"
+    iptables -t mangle -A TRACE_PKT_INPUT -j LOG --log-prefix "[$TOOL_PREFIX][mangle][INPUT      ]:"
+    iptables -t mangle -A TRACE_PKT_FORWARD -j LOG --log-prefix "[$TOOL_PREFIX][mangle][FORWARD    ]:"
+    iptables -t mangle -A TRACE_PKT_OUTPUT -j LOG --log-prefix "[$TOOL_PREFIX][mangle][OUTPUT     ]:"
+    iptables -t mangle -A TRACE_PKT_POSTROUTING -j LOG --log-prefix "[$TOOL_PREFIX][mangle][POSTROUTING]:"
 
     if [ $IS_LIGHT_TRAFFIC -eq 1 ]; then
-        iptables -t filter -A TRACE_PKT_INPUT -j LOG --log-prefix "[TRACE][filter][INPUT      ]:"
-        iptables -t filter -A TRACE_PKT_FORWARD -j LOG --log-prefix "[TRACE][filter][FORWARD    ]:"
-        iptables -t filter -A TRACE_PKT_OUTPUT -j LOG --log-prefix "[TRACE][filter][OUTPUT     ]:"
-        iptables -t nat -A TRACE_PKT_PREROUTING -j LOG --log-prefix "[TRACE][nat   ][PREROUTING ]:"
-        iptables -t nat -A TRACE_PKT_INPUT -j LOG --log-prefix "[TRACE][nat   ][INPUT      ]:"
-        iptables -t nat -A TRACE_PKT_OUTPUT -j LOG --log-prefix "[TRACE][nat   ][OUTPUT     ]:"
-        iptables -t nat -A TRACE_PKT_POSTROUTING -j LOG --log-prefix "[TRACE][nat   ][POSTROUTING]:"
+        iptables -t filter -A TRACE_PKT_INPUT -j LOG --log-prefix "[$TOOL_PREFIX][filter][INPUT      ]:"
+        iptables -t filter -A TRACE_PKT_FORWARD -j LOG --log-prefix "[$TOOL_PREFIX][filter][FORWARD    ]:"
+        iptables -t filter -A TRACE_PKT_OUTPUT -j LOG --log-prefix "[$TOOL_PREFIX][filter][OUTPUT     ]:"
+        iptables -t nat -A TRACE_PKT_PREROUTING -j LOG --log-prefix "[$TOOL_PREFIX][nat   ][PREROUTING ]:"
+        iptables -t nat -A TRACE_PKT_INPUT -j LOG --log-prefix "[$TOOL_PREFIX][nat   ][INPUT      ]:"
+        iptables -t nat -A TRACE_PKT_OUTPUT -j LOG --log-prefix "[$TOOL_PREFIX][nat   ][OUTPUT     ]:"
+        iptables -t nat -A TRACE_PKT_POSTROUTING -j LOG --log-prefix "[$TOOL_PREFIX][nat   ][POSTROUTING]:"
     fi
 }
 
 function black_del_log_rules() {
-    iptables -t mangle -D TRACE_PKT_PREROUTING -j LOG --log-prefix "[TRACE][mangle][PREROUTING ]:"
-    iptables -t mangle -D TRACE_PKT_INPUT -j LOG --log-prefix "[TRACE][mangle][INPUT      ]:"
-    iptables -t mangle -D TRACE_PKT_FORWARD -j LOG --log-prefix "[TRACE][mangle][FORWARD    ]:"
-    iptables -t mangle -D TRACE_PKT_OUTPUT -j LOG --log-prefix "[TRACE][mangle][OUTPUT     ]:"
-    iptables -t mangle -D TRACE_PKT_POSTROUTING -j LOG --log-prefix "[TRACE][mangle][POSTROUTING]:"
+    iptables -t mangle -D TRACE_PKT_PREROUTING -j LOG --log-prefix "[$TOOL_PREFIX][mangle][PREROUTING ]:"
+    iptables -t mangle -D TRACE_PKT_INPUT -j LOG --log-prefix "[$TOOL_PREFIX][mangle][INPUT      ]:"
+    iptables -t mangle -D TRACE_PKT_FORWARD -j LOG --log-prefix "[$TOOL_PREFIX][mangle][FORWARD    ]:"
+    iptables -t mangle -D TRACE_PKT_OUTPUT -j LOG --log-prefix "[$TOOL_PREFIX][mangle][OUTPUT     ]:"
+    iptables -t mangle -D TRACE_PKT_POSTROUTING -j LOG --log-prefix "[$TOOL_PREFIX][mangle][POSTROUTING]:"
 
-    iptables -t filter -D TRACE_PKT_INPUT -j LOG --log-prefix "[TRACE][filter][INPUT      ]:"
-    iptables -t filter -D TRACE_PKT_FORWARD -j LOG --log-prefix "[TRACE][filter][FORWARD    ]:"
-    iptables -t filter -D TRACE_PKT_OUTPUT -j LOG --log-prefix "[TRACE][filter][OUTPUT     ]:"
+    iptables -t filter -D TRACE_PKT_INPUT -j LOG --log-prefix "[$TOOL_PREFIX][filter][INPUT      ]:"
+    iptables -t filter -D TRACE_PKT_FORWARD -j LOG --log-prefix "[$TOOL_PREFIX][filter][FORWARD    ]:"
+    iptables -t filter -D TRACE_PKT_OUTPUT -j LOG --log-prefix "[$TOOL_PREFIX][filter][OUTPUT     ]:"
 
-    iptables -t nat -D TRACE_PKT_PREROUTING -j LOG --log-prefix "[TRACE][nat   ][PREROUTING ]:"
-    iptables -t nat -D TRACE_PKT_INPUT -j LOG --log-prefix "[TRACE][nat   ][INPUT      ]:"
-    iptables -t nat -D TRACE_PKT_OUTPUT -j LOG --log-prefix "[TRACE][nat   ][OUTPUT     ]:"
-    iptables -t nat -D TRACE_PKT_POSTROUTING -j LOG --log-prefix "[TRACE][nat   ][POSTROUTING]:"
+    iptables -t nat -D TRACE_PKT_PREROUTING -j LOG --log-prefix "[$TOOL_PREFIX][nat   ][PREROUTING ]:"
+    iptables -t nat -D TRACE_PKT_INPUT -j LOG --log-prefix "[$TOOL_PREFIX][nat   ][INPUT      ]:"
+    iptables -t nat -D TRACE_PKT_OUTPUT -j LOG --log-prefix "[$TOOL_PREFIX][nat   ][OUTPUT     ]:"
+    iptables -t nat -D TRACE_PKT_POSTROUTING -j LOG --log-prefix "[$TOOL_PREFIX][nat   ][POSTROUTING]:"
 }
 
 # create log rules for seconds to avoid system stuck
@@ -496,33 +509,47 @@ function black_clear_log_rules() {
 }
 
 function white_len_set_rule() {
-    iptables -t mangle -I PREROUTING -m length --length 45 -j LOG --log-prefix "[TRACE][mangle][PREROUTING ]:"
-    iptables -t nat -I PREROUTING -m length --length 45 -j LOG --log-prefix "[TRACE][nat   ][PREROUTING ]:"
-    iptables -t mangle -I INPUT -m length --length 45 -j LOG --log-prefix "[TRACE][mangle][INPUT      ]:"
-    iptables -t nat -I INPUT -m length --length 45 -j LOG --log-prefix "[TRACE][nat   ][INPUT      ]:"
-    iptables -t filter -I INPUT -m length --length 45 -j LOG --log-prefix "[TRACE][filter][INPUT      ]:"
-    iptables -t mangle -I FORWARD -m length --length 45 -j LOG --log-prefix "[TRACE][mangle][FORWARD    ]:"
-    iptables -t filter -I FORWARD -m length --length 45 -j LOG --log-prefix "[TRACE][filter][FORWARD    ]:"
-    iptables -t mangle -I OUTPUT -m length --length 45 -j LOG --log-prefix "[TRACE][mangle][OUTPUT     ]:"
-    iptables -t nat -I OUTPUT -m length --length 45 -j LOG --log-prefix "[TRACE][nat   ][OUTPUT     ]:"
-    iptables -t filter -I OUTPUT -m length --length 45 -j LOG --log-prefix "[TRACE][filter][OUTPUT     ]:"
-    iptables -t mangle -I POSTROUTING -m length --length 45 -j LOG --log-prefix "[TRACE][mangle][POSTROUTING]:"
-    iptables -t nat -I POSTROUTING -m length --length 45 -j LOG --log-prefix "[TRACE][nat   ][POSTROUTING]:"
+    if [ $# -lt 1 ]; then
+        red "[ERROR]<lenght> not specified"
+        exit 1
+    else
+        len=$1
+    fi
+    yellow "set len: $len"
+
+    iptables -t mangle -I PREROUTING -m length --length $len -j LOG --log-prefix "[$TOOL_PREFIX][mangle][PREROUTING ]:"
+    iptables -t nat -I PREROUTING -m length --length $len -j LOG --log-prefix "[$TOOL_PREFIX][nat   ][PREROUTING ]:"
+    iptables -t mangle -I INPUT -m length --length $len -j LOG --log-prefix "[$TOOL_PREFIX][mangle][INPUT      ]:"
+    iptables -t nat -I INPUT -m length --length $len -j LOG --log-prefix "[$TOOL_PREFIX][nat   ][INPUT      ]:"
+    iptables -t filter -I INPUT -m length --length $len -j LOG --log-prefix "[$TOOL_PREFIX][filter][INPUT      ]:"
+    iptables -t mangle -I FORWARD -m length --length $len -j LOG --log-prefix "[$TOOL_PREFIX][mangle][FORWARD    ]:"
+    iptables -t filter -I FORWARD -m length --length $len -j LOG --log-prefix "[$TOOL_PREFIX][filter][FORWARD    ]:"
+    iptables -t mangle -I OUTPUT -m length --length $len -j LOG --log-prefix "[$TOOL_PREFIX][mangle][OUTPUT     ]:"
+    iptables -t nat -I OUTPUT -m length --length $len -j LOG --log-prefix "[$TOOL_PREFIX][nat   ][OUTPUT     ]:"
+    iptables -t filter -I OUTPUT -m length --length $len -j LOG --log-prefix "[$TOOL_PREFIX][filter][OUTPUT     ]:"
+    iptables -t mangle -I POSTROUTING -m length --length $len -j LOG --log-prefix "[$TOOL_PREFIX][mangle][POSTROUTING]:"
+    iptables -t nat -I POSTROUTING -m length --length $len -j LOG --log-prefix "[$TOOL_PREFIX][nat   ][POSTROUTING]:"
 }
 
 function white_len_clear_rule() {
-    iptables -w -t mangle -D PREROUTING -m length --length 45 -j LOG --log-prefix "[TRACE][mangle][PREROUTING ]:"
-    iptables -w -t nat -D PREROUTING -m length --length 45 -j LOG --log-prefix "[TRACE][nat   ][PREROUTING ]:"
-    iptables -w -t mangle -D INPUT -m length --length 45 -j LOG --log-prefix "[TRACE][mangle][INPUT      ]:"
-    iptables -w -t nat -D INPUT -m length --length 45 -j LOG --log-prefix "[TRACE][nat   ][INPUT      ]:"
-    iptables -w -t filter -D INPUT -m length --length 45 -j LOG --log-prefix "[TRACE][filter][INPUT      ]:"
-    iptables -w -t mangle -D FORWARD -m length --length 45 -j LOG --log-prefix "[TRACE][mangle][FORWARD    ]:"
-    iptables -w -t filter -D FORWARD -m length --length 45 -j LOG --log-prefix "[TRACE][filter][FORWARD    ]:"
-    iptables -w -t mangle -D OUTPUT -m length --length 45 -j LOG --log-prefix "[TRACE][mangle][OUTPUT     ]:"
-    iptables -w -t nat -D OUTPUT -m length --length 45 -j LOG --log-prefix "[TRACE][nat   ][OUTPUT     ]:"
-    iptables -w -t filter -D OUTPUT -m length --length 45 -j LOG --log-prefix "[TRACE][filter][OUTPUT     ]:"
-    iptables -w -t mangle -D POSTROUTING -m length --length 45 -j LOG --log-prefix "[TRACE][mangle][POSTROUTING]:"
-    iptables -w -t nat -D POSTROUTING -m length --length 45 -j LOG --log-prefix "[TRACE][nat   ][POSTROUTING]:"
+    len=$(iptables-save | grep -E "FORWARD -m length --length [0-9]+ -j LOG --log-prefix" | awk 'NR==1 {print $6}')
+    if [ -z "$len" ]; then
+        return
+    fi
+    yellow "clear len: $len"
+
+    iptables -w -t mangle -D PREROUTING -m length --length $len -j LOG --log-prefix "[$TOOL_PREFIX][mangle][PREROUTING ]:"
+    iptables -w -t nat -D PREROUTING -m length --length $len -j LOG --log-prefix "[$TOOL_PREFIX][nat   ][PREROUTING ]:"
+    iptables -w -t mangle -D INPUT -m length --length $len -j LOG --log-prefix "[$TOOL_PREFIX][mangle][INPUT      ]:"
+    iptables -w -t nat -D INPUT -m length --length $len -j LOG --log-prefix "[$TOOL_PREFIX][nat   ][INPUT      ]:"
+    iptables -w -t filter -D INPUT -m length --length $len -j LOG --log-prefix "[$TOOL_PREFIX][filter][INPUT      ]:"
+    iptables -w -t mangle -D FORWARD -m length --length $len -j LOG --log-prefix "[$TOOL_PREFIX][mangle][FORWARD    ]:"
+    iptables -w -t filter -D FORWARD -m length --length $len -j LOG --log-prefix "[$TOOL_PREFIX][filter][FORWARD    ]:"
+    iptables -w -t mangle -D OUTPUT -m length --length $len -j LOG --log-prefix "[$TOOL_PREFIX][mangle][OUTPUT     ]:"
+    iptables -w -t nat -D OUTPUT -m length --length $len -j LOG --log-prefix "[$TOOL_PREFIX][nat   ][OUTPUT     ]:"
+    iptables -w -t filter -D OUTPUT -m length --length $len -j LOG --log-prefix "[$TOOL_PREFIX][filter][OUTPUT     ]:"
+    iptables -w -t mangle -D POSTROUTING -m length --length $len -j LOG --log-prefix "[$TOOL_PREFIX][mangle][POSTROUTING]:"
+    iptables -w -t nat -D POSTROUTING -m length --length $len -j LOG --log-prefix "[$TOOL_PREFIX][nat   ][POSTROUTING]:"
 }
 
 function black_show() {
@@ -536,33 +563,48 @@ function white_show() {
 }
 
 function white_content_set_rule() {
-    iptables -m string --string "hello" --algo bm -t mangle -I PREROUTING -j LOG --log-prefix "[TRACE][mangle][PREROUTING ]:"
-    iptables -m string --string "hello" --algo bm -t nat -I PREROUTING -j LOG --log-prefix "[TRACE][nat   ][PREROUTING ]:"
-    iptables -m string --string "hello" --algo bm -t mangle -I INPUT -j LOG --log-prefix "[TRACE][mangle][INPUT      ]:"
-    iptables -m string --string "hello" --algo bm -t nat -I INPUT -j LOG --log-prefix "[TRACE][nat   ][INPUT      ]:"
-    iptables -m string --string "hello" --algo bm -t filter -I INPUT -j LOG --log-prefix "[TRACE][filter][INPUT      ]:"
-    iptables -m string --string "hello" --algo bm -t mangle -I FORWARD -j LOG --log-prefix "[TRACE][mangle][FORWARD    ]:"
-    iptables -m string --string "hello" --algo bm -t filter -I FORWARD -j LOG --log-prefix "[TRACE][filter][FORWARD    ]:"
-    iptables -m string --string "hello" --algo bm -t mangle -I OUTPUT -j LOG --log-prefix "[TRACE][mangle][OUTPUT     ]:"
-    iptables -m string --string "hello" --algo bm -t nat -I OUTPUT -j LOG --log-prefix "[TRACE][nat   ][OUTPUT     ]:"
-    iptables -m string --string "hello" --algo bm -t filter -I OUTPUT -j LOG --log-prefix "[TRACE][filter][OUTPUT     ]:"
-    iptables -m string --string "hello" --algo bm -t mangle -I POSTROUTING -j LOG --log-prefix "[TRACE][mangle][POSTROUTING]:"
-    iptables -m string --string "hello" --algo bm -t nat -I POSTROUTING -j LOG --log-prefix "[TRACE][nat   ][POSTROUTING]:"
+    if [ $# -lt 1 ]; then
+        red "[ERROR]<content> not specified"
+        exit 1
+    else
+        content=$1
+    fi
+    yellow "set content: $content"
+
+    iptables -m string --string $content --algo bm -t mangle -I PREROUTING -j LOG --log-prefix "[$TOOL_PREFIX][mangle][PREROUTING ]:"
+    iptables -m string --string $content --algo bm -t nat -I PREROUTING -j LOG --log-prefix "[$TOOL_PREFIX][nat   ][PREROUTING ]:"
+    iptables -m string --string $content --algo bm -t mangle -I INPUT -j LOG --log-prefix "[$TOOL_PREFIX][mangle][INPUT      ]:"
+    iptables -m string --string $content --algo bm -t nat -I INPUT -j LOG --log-prefix "[$TOOL_PREFIX][nat   ][INPUT      ]:"
+    iptables -m string --string $content --algo bm -t filter -I INPUT -j LOG --log-prefix "[$TOOL_PREFIX][filter][INPUT      ]:"
+    iptables -m string --string $content --algo bm -t mangle -I FORWARD -j LOG --log-prefix "[$TOOL_PREFIX][mangle][FORWARD    ]:"
+    iptables -m string --string $content --algo bm -t filter -I FORWARD -j LOG --log-prefix "[$TOOL_PREFIX][filter][FORWARD    ]:"
+    iptables -m string --string $content --algo bm -t mangle -I OUTPUT -j LOG --log-prefix "[$TOOL_PREFIX][mangle][OUTPUT     ]:"
+    iptables -m string --string $content --algo bm -t nat -I OUTPUT -j LOG --log-prefix "[$TOOL_PREFIX][nat   ][OUTPUT     ]:"
+    iptables -m string --string $content --algo bm -t filter -I OUTPUT -j LOG --log-prefix "[$TOOL_PREFIX][filter][OUTPUT     ]:"
+    iptables -m string --string $content --algo bm -t mangle -I POSTROUTING -j LOG --log-prefix "[$TOOL_PREFIX][mangle][POSTROUTING]:"
+    iptables -m string --string $content --algo bm -t nat -I POSTROUTING -j LOG --log-prefix "[$TOOL_PREFIX][nat   ][POSTROUTING]:"
 }
 
 function white_content_clear_rule() {
-    iptables -w -m string --string "hello" --algo bm -t mangle -D PREROUTING -j LOG --log-prefix "[TRACE][mangle][PREROUTING ]:"
-    iptables -w -m string --string "hello" --algo bm -t nat -D PREROUTING -j LOG --log-prefix "[TRACE][nat   ][PREROUTING ]:"
-    iptables -w -m string --string "hello" --algo bm -t mangle -D INPUT -j LOG --log-prefix "[TRACE][mangle][INPUT      ]:"
-    iptables -w -m string --string "hello" --algo bm -t nat -D INPUT -j LOG --log-prefix "[TRACE][nat   ][INPUT      ]:"
-    iptables -w -m string --string "hello" --algo bm -t filter -D INPUT -j LOG --log-prefix "[TRACE][filter][INPUT      ]:"
-    iptables -w -m string --string "hello" --algo bm -t mangle -D FORWARD -j LOG --log-prefix "[TRACE][mangle][FORWARD    ]:"
-    iptables -w -m string --string "hello" --algo bm -t filter -D FORWARD -j LOG --log-prefix "[TRACE][filter][FORWARD    ]:"
-    iptables -w -m string --string "hello" --algo bm -t mangle -D OUTPUT -j LOG --log-prefix "[TRACE][mangle][OUTPUT     ]:"
-    iptables -w -m string --string "hello" --algo bm -t nat -D OUTPUT -j LOG --log-prefix "[TRACE][nat   ][OUTPUT     ]:"
-    iptables -w -m string --string "hello" --algo bm -t filter -D OUTPUT -j LOG --log-prefix "[TRACE][filter][OUTPUT     ]:"
-    iptables -w -m string --string "hello" --algo bm -t mangle -D POSTROUTING -j LOG --log-prefix "[TRACE][mangle][POSTROUTING]:"
-    iptables -w -m string --string "hello" --algo bm -t nat -D POSTROUTING -j LOG --log-prefix "[TRACE][nat   ][POSTROUTING]:"
+    content=$(iptables-save | grep -E "FORWARD -m string --string \"\S+\" --algo bm --to 65535 -j LOG --log-prefix" | awk 'NR==1 {print $6}')
+    content=${content//\"/}
+    if [ -z "$content" ]; then
+        return
+    fi
+    yellow "clear content: $content"
+
+    iptables -w -m string --string $content --algo bm -t mangle -D PREROUTING -j LOG --log-prefix "[$TOOL_PREFIX][mangle][PREROUTING ]:"
+    iptables -w -m string --string $content --algo bm -t nat -D PREROUTING -j LOG --log-prefix "[$TOOL_PREFIX][nat   ][PREROUTING ]:"
+    iptables -w -m string --string $content --algo bm -t mangle -D INPUT -j LOG --log-prefix "[$TOOL_PREFIX][mangle][INPUT      ]:"
+    iptables -w -m string --string $content --algo bm -t nat -D INPUT -j LOG --log-prefix "[$TOOL_PREFIX][nat   ][INPUT      ]:"
+    iptables -w -m string --string $content --algo bm -t filter -D INPUT -j LOG --log-prefix "[$TOOL_PREFIX][filter][INPUT      ]:"
+    iptables -w -m string --string $content --algo bm -t mangle -D FORWARD -j LOG --log-prefix "[$TOOL_PREFIX][mangle][FORWARD    ]:"
+    iptables -w -m string --string $content --algo bm -t filter -D FORWARD -j LOG --log-prefix "[$TOOL_PREFIX][filter][FORWARD    ]:"
+    iptables -w -m string --string $content --algo bm -t mangle -D OUTPUT -j LOG --log-prefix "[$TOOL_PREFIX][mangle][OUTPUT     ]:"
+    iptables -w -m string --string $content --algo bm -t nat -D OUTPUT -j LOG --log-prefix "[$TOOL_PREFIX][nat   ][OUTPUT     ]:"
+    iptables -w -m string --string $content --algo bm -t filter -D OUTPUT -j LOG --log-prefix "[$TOOL_PREFIX][filter][OUTPUT     ]:"
+    iptables -w -m string --string $content --algo bm -t mangle -D POSTROUTING -j LOG --log-prefix "[$TOOL_PREFIX][mangle][POSTROUTING]:"
+    iptables -w -m string --string $content --algo bm -t nat -D POSTROUTING -j LOG --log-prefix "[$TOOL_PREFIX][nat   ][POSTROUTING]:"
 }
 
 function black_apply_iptables_cmd() {
@@ -596,23 +638,48 @@ function black_apply_iptables_cmd() {
 }
 
 function white_len_usage() {
+    if [ $# -lt 1 ]; then
+        len=30
+    else
+        len=$1
+    fi
+    valid_len=$(($len - 29))
+    content=$(tr -dc '5a' </dev/urandom | head -c $valid_len)
     red "[Whitelist mode by length]"
-    yellow "The sender command, e.g.:"
-    yellow "Not established connection(by packet length):"
-    green "hping3 -c 1 --syn --destport 32028 --data 5 10.106.121.108 -j"
+    yellow "The receiver command:"
+    green "nc -kluvp 32028"
+    echo ""
+    yellow "The sender command:"
+    yellow "Avoid established connection(by packet length):"
+    green "hping3 -c 1 --syn --destport 32028 --data 5 $current_ip -j"
+    echo ""
     yellow "Established connection:"
-    green "nc 10.106.121.108 32028 -p 23130"
+    green "nc -u $current_ip 32028 -p 23130"
+    green "$content"
+    echo ""
 }
 
 function white_content_usage() {
+    if [ $# -lt 1 ]; then
+        content="hello"
+    else
+        content=$1
+    fi
     red "[Whitelist mode by content]"
-    yellow "The sender command, e.g.:"
+    yellow "The receiver command:"
+    green "nc -kluvp 32028"
+    echo ""
+    yellow "The sender command:"
     yellow "Create data file:"
-    green "echo hello > data.txt"
-    yellow "Not established connection(by packet content):"
-    green "hping3 -c 1 --syn --destport 32028 --data 5 --file data.txt 10.106.121.108 -j"
+    green "echo $content > data.txt"
+    echo ""
+    yellow "Avoid established connection(by packet content):"
+    green "hping3 -c 1 --syn --destport 32028 --data 5 --file data.txt $current_ip -j"
+    echo ""
     yellow "Established connection:"
-    green "nc 10.106.121.108 32028 -p 23130"
+    green "nc -u $current_ip 32028 -p 23130"
+    green "$content"
+    echo ""
 }
 
 function main() {
@@ -673,15 +740,23 @@ function main() {
             shift
             case $1 in
             --set)
-                white_len_usage
+                if [ $# -lt 2 ]; then
+                    red "[ERROR]<length> not specified"
+                    exit 1
+                fi
+                white_len_clear_rule
+                white_len_set_rule $2
+                white_len_usage $2
                 red "Run the following command to show log:"
-                green "$0 --white --by-length --show"
-                white_len_set_rule
+                # green "$0 --white --by-length --show"
+                green "$0 --white --show"
+                echo ""
                 ;;
             --show)
-                white_content_usage
+                white_len_usage
                 red "Run the following command before show log:"
                 green "$0 --white --by-length --set"
+                echo ""
                 white_show
                 ;;
             --clear)
@@ -697,15 +772,23 @@ function main() {
             shift
             case $1 in
             --set)
-                white_content_usage
+                if [ $# -lt 2 ]; then
+                    red "[ERROR]<content> not specified"
+                    exit 1
+                fi
+                white_content_clear_rule
+                white_content_set_rule $2
+                white_content_usage $2
                 red "Run the following command to show log:"
-                green "$0 --white --by-content --show"
-                white_content_set_rule
+                # green "$0 --white --by-content --show"
+                green "$0 --white --show"
+                echo ""
                 ;;
             --show)
                 white_content_usage
                 red "Run the following command before show log:"
                 green "$0 --white --by-content --set"
+                echo ""
                 white_show
                 ;;
             --clear)
@@ -717,6 +800,17 @@ function main() {
                 ;;
             esac
             ;;
+        --show)
+            white_show
+            ;;
+        --clear)
+            white_len_clear_rule
+            white_content_clear_rule
+            ;;
+        *)
+            red "[ERROR]No mode match."
+            usage
+            ;;
         esac
         ;;
     *)
@@ -725,5 +819,24 @@ function main() {
         ;;
     esac
 }
+
+# check if conntrack is installed
+if ! command -v conntrack &>/dev/null; then
+    red "[ERROR]conntrack is not installed"
+    green "Please install conntrack : sudo apt install conntrack"
+    exit 1
+fi
+
+# show existing rules
+if [ $SHOW_EXISTING_RULES -eq 1 ]; then
+    existed=$(iptables-save | grep "\[$TOOL_PREFIX\]")
+    if [ -z "$existed" ]; then
+        echo ""
+    else
+        yellow "Existing rules:"
+        echo ""
+        green "$existed"
+    fi
+fi
 
 main "$@"
