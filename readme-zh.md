@@ -9,6 +9,27 @@
 
 本脚本帮助实现这两种方式的抓包.
 
+<!-- TOC tocDepth:2..3 chapterDepth:2..6 -->
+
+- [白名单模式](#白名单模式)
+  - [基于 data 长度](#基于-data-长度)
+  - [基于 data 内容](#基于-data-内容)
+- [黑名单模式](#黑名单模式)
+  - [采集模式](#采集模式)
+  - [默认规则模式(适用 k8s 集群)](#默认规则模式适用-k8s-集群)
+- [使用镜像](#使用镜像)
+- [Docker Image Usage](#docker-image-usage)
+
+<!-- /TOC -->
+
+## 使用
+
+```bash
+curl -O https://raw.githubusercontent.com/jqknono/iptables_debug_tool/main/iptables_debug_tool.sh
+chmod +x iptables_debug_tool.sh
+./iptables_debug_tool.sh -h
+```
+
 ## 白名单模式
 
 依赖工具:
@@ -25,11 +46,11 @@
 
 ```bash
 # 设置采集规则
-iptables_debug_tool.sh --white --by-length --set
+iptables_debug_tool.sh --white --by-length --set 34
 # 监控日志
-iptables_debug_tool.sh --white --by-length --show
+iptables_debug_tool.sh --white --show
 # 清理采集规则
-iptables_debug_tool.sh --white --by-length --clear
+iptables_debug_tool.sh --white --clear
 ```
 
 发送端:
@@ -46,11 +67,11 @@ hping3 -c 1 -2    --destport 32028 --data 5 10.106.121.108 -j
 
 ```bash
 # 设置采集规则
-iptables_debug_tool.sh --white --by-content --set
+iptables_debug_tool.sh --white --by-content --set hello
 # 监控日志
-iptables_debug_tool.sh --white --by-content --show
+iptables_debug_tool.sh --white --show
 # 清理采集规则
-iptables_debug_tool.sh --white --by-content --clear
+iptables_debug_tool.sh --white --clear
 ```
 
 发送端:
@@ -154,3 +175,50 @@ EOF
 `nc :: 8080`
 
 `nc -u :: 8081`
+
+### K8s
+
+```yaml
+cat <<EOF | kubectl apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: simple-echo-server
+  labels:
+    app: simple-echo-server
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: simple-echo-server
+  template:
+    metadata:
+      labels:
+        app: simple-echo-server
+    spec:
+      containers:
+        - name: simple-echo-server
+          image: jqknono/simple_echo_server:latest
+          ports:
+            - containerPort: 55580
+            - containerPort: 55581
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: simple-echo-server
+spec:
+  type: NodePort
+  selector:
+    app: simple-echo-server
+  ports:
+    - name: tcp
+      port: 8080
+      targetPort: 55580
+      protocol: TCP
+    - name: udp
+      port: 8081
+      targetPort: 55581
+      protocol: UDP
+EOF
+```

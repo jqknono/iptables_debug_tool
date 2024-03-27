@@ -23,7 +23,7 @@ function usage() {
     yellow "Usage: $0 {--white  { --by-content | --by-length } { --set <arg> | --show | --clear } }"
     echo ""
     yellow "--black: blacklist mode"
-    yellow "  --apply-default: apply default rules"
+    yellow "  --apply-default: apply default rules for k8s"
     green "  e.g.: $0 --black --apply-default <k8s_master_node_ip>"
     echo ""
     yellow "  --collect: log ignore connections and last for <last_seconds> seconds"
@@ -691,6 +691,9 @@ function main() {
 
     # get params
     case $1 in
+    -h | --help)
+        usage
+        ;;
     --black)
         shift
         case $1 in

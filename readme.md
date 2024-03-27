@@ -4,12 +4,34 @@
 
 Packet capture logs are a method for debugging firewall rules. However, capturing packets often results in many irrelevant entries. There are two ways to only capture specific packets: whitelist mode and blacklist mode.
 
-- Whitelist mode: This mode only captures packets that meet certain criteria. You need to construct the packets yourself, typically only needing to create SYN packets. However, ensure to use conntrack -F to clear established connections before each test.
-- Blacklist mode: This mode involves first collecting a period of inactivity logs and adding the traffic from these logs to the ignore list. This ensures the integrity of the logs during operations.
+- **Whitelist mode**: This mode only captures packets that meet certain criteria. You need to construct the packets yourself, typically only needing to create SYN packets. However, ensure to use conntrack -F to clear established connections before each test.
+- **Blacklist mode**: This mode involves first collecting a period of inactivity logs and adding the traffic from these logs to the ignore list. This ensures the integrity of the logs during operations.
 
 **The method that captures the most complete packet path is the blacklist mode, but it's more complex to set up.** Modify the `black_apply_default_rule` function as needed.
 
 This script aids in implementing both packet capture modes.
+
+<!-- TOC tocDepth:2..3 chapterDepth:2..6 -->
+
+- [Usage](#usage)
+- [Whitelist Mode](#whitelist-mode)
+  - [Based on data length](#based-on-data-length)
+  - [Based on data content](#based-on-data-content)
+- [Blacklist Mode](#blacklist-mode)
+  - [Collection Mode](#collection-mode)
+  - [Default Rule Mode (for k8s clusters)](#default-rule-mode-for-k8s-clusters)
+- [Using Images](#using-images)
+- [Docker Image Usage](#docker-image-usage)
+
+<!-- /TOC -->
+
+## Usage
+
+```bash
+curl -O https://raw.githubusercontent.com/jqknono/iptables_debug_tool/main/iptables_debug_tool.sh
+chmod +x iptables_debug_tool.sh
+./iptables_debug_tool.sh -h
+```
 
 ## Whitelist Mode
 
@@ -20,7 +42,7 @@ Dependencies:
   - Ubuntu 20.04: `apt-get -y install hping3 conntrack`
   - Ubuntu 22.04: `apt-get -y install hping3 conntrack iptables`
 
-### Based on Data Length
+### Based on data length
 
 Note that the packet length may change during transmission, causing the packet path to be incomplete. For example, in ipip mode, the packet length increases by 20 bytes.
 
@@ -28,11 +50,11 @@ Monitoring side:
 
 ```bash
 # Set capture rules
-iptables_debug_tool.sh --white --by-length --set
+iptables_debug_tool.sh --white --by-length --set 34
 # Monitor logs
-iptables_debug_tool.sh --white --by-length --show
+iptables_debug_tool.sh --white --show
 # Clear capture rules
-iptables_debug_tool.sh --white --by-length --clear
+iptables_debug_tool.sh --white --clear
 ```
 
 On the sender side:
@@ -49,11 +71,11 @@ On the monitoring side:
 
 ```bash
 # Set capture rules
-iptables_debug_tool.sh --white --by-content --set
+iptables_debug_tool.sh --white --by-content --set hello
 # Monitor logs
-iptables_debug_tool.sh --white --by-content --show
+iptables_debug_tool.sh --white --show
 # Clear capture rules
-iptables_debug_tool.sh --white --by-content --clear
+iptables_debug_tool.sh --white --clear
 ```
 
 Sender side:
@@ -137,23 +159,72 @@ EOF
 
 ## Using Images
 
+- https://hub.docker.com/r/jqknono/simple_echo_server
+  - `docker pull jqknono/simple_echo_server:latest`
 - https://hub.docker.com/r/venilnoronha/tcp-echo-server
   - `docker pull venilnoronha/tcp-echo-server:latest`
 - https://hub.docker.com/r/utkudarilmaz/hping3
   - `docker pull utkudarilmaz/hping3:latest`
 - https://hub.docker.com/r/containous/whoami
   - `docker pull containous/whoami:latest`
-- https://hub.docker.com/r/jqknono/simple_echo_server
-  - `docker pull jqknono/simple_echo_server:latest`
 
-## Docker Image Usage
+## Image Usage
 
 - Listen to ports and echo the requests.
 - Support TCP & UDP
 - Support IPv4 & IPv6
+
+### Docker
 
 `docker run --rm -it --name simple_echo_server -p 8080:55580/tcp -p 8081:55581/udp jqknono/simple_echo_server:latest`
 
 `nc :: 8080`
 
 `nc -u :: 8081`
+
+### K8s
+
+```yaml
+cat <<EOF | kubectl apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: simple-echo-server
+  labels:
+    app: simple-echo-server
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: simple-echo-server
+  template:
+    metadata:
+      labels:
+        app: simple-echo-server
+    spec:
+      containers:
+        - name: simple-echo-server
+          image: jqknono/simple_echo_server:latest
+          ports:
+            - containerPort: 55580
+            - containerPort: 55581
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: simple-echo-server
+spec:
+  type: NodePort
+  selector:
+    app: simple-echo-server
+  ports:
+    - name: tcp
+      port: 8080
+      targetPort: 55580
+      protocol: TCP
+    - name: udp
+      port: 8081
+      targetPort: 55581
+      protocol: UDP
+EOF
+```
